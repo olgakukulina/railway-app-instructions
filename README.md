@@ -1,4 +1,4 @@
-# Railway AI Platform
+~~# Railway AI Platform
 
 Платформа автоматической генерации **технологических инструкций** по железнодорожному пути необщего пользования на основе **техпаспорта** станции.
 
@@ -37,35 +37,18 @@ cd railway_app_instructions
 git checkout main
 ```
 
-### 2. Настроить ключ GigaChat
+## 2. Запуск сервера с локальным ИИ через llama.cpp
 
-1. Зайдите в [developers.sber.ru/studio](https://developers.sber.ru/studio) → Сбер ID.
-2. Создайте проект **GigaChat API**.
-3. **Настройки API → Получить ключ** → скопируйте **Ключ авторизации** (показывается один раз).
+1. Скачай [llama-b10734-bin-win-vulkan-x64](https://github.com/ggerganov/llama.cpp/releases)
 
-В корне репозитория:
+2. Скачай модель в формате GGUF:
+   [Qwen3-8B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/blob/main/Qwen3VL-8B-Instruct-Q4_K_M.gguf)
 
-```bash
-# Linux / macOS / Git Bash
-cp .env.example .env
-
-# Windows PowerShell
-Copy-Item .env.example .env
+3. Запусти сервер:
+```cmd
+cd C:\llama (или любой другой путь)
+llama-server.exe -m models\Qwen3-8B-Q4_K_M.gguf -c 4096 -ngl 99 -p 11435
 ```
-
-Откройте `.env` и подставьте ключ:
-
-```env
-GIGACHAT_CREDENTIALS=сюда_ключ_авторизации_из_Studio
-AI_MOCK=false
-GIGACHAT_SCOPE=GIGACHAT_API_PERS
-```
-
-> Для ИП/юрлиц scope может быть `GIGACHAT_API_B2B` или `GIGACHAT_API_CORP` — смотрите поле Scope в кабинете Studio.  
-> Файл `.env` в git **не коммитится**.
-
-Без ключа пайплайн всё равно отработает: AI возьмёт текст из разобранного документа (`document_narrative`) или факты техпаспорта, но это уже не полноценная генерация через GigaChat.
-
 ### 3. Поднять платформу
 
 Из корня репозитория:

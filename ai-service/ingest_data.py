@@ -9,11 +9,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GIGACHAT_TOKEN = os.getenv("GIGACHAT_CREDENTIALS", "YOUR_GIGACHAT_TOKEN_HERE") 
+
 COLLECTION_NAME = "station_instructions"
 DOCS_DIR = "./reference_docs"
 
-QDRANT_URL = "http://127.0.0.1:6333" 
+QDRANT_URL = "http://qdrant:6333"
 
 def parse_docx(file_path: str) -> list[Document]:
     doc = docx.Document(file_path)
@@ -75,7 +75,7 @@ def main():
         )
         print(f"Создана новая коллекция: {COLLECTION_NAME}")
 
-    print("Отправка векторов в GigaChat и сохранение в Docker... (это займет пару минут)")
+    print("Отправка векторов в Qwen и сохранение в Docker... (это займет пару минут)")
     QdrantVectorStore.from_documents(
         all_chunks, 
         embeddings, 

@@ -58,6 +58,23 @@ services:
     networks:
       - railway-network
 
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: railway-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - railway-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   gateway:
     build:
       context: ./gateway
@@ -116,11 +133,11 @@ services:
       dockerfile: Dockerfile
     container_name: railway-ai-service
     environment:
-      # false: GigaChat / narrative; true — явные заглушки
+      AI_API_URL: ${AI_API_URL:-http://host.docker.internal:11435/v1}
+      AI_API_KEY: ${AI_API_KEY:-sk-local-key}
+      QWEN_MODEL_NAME: ${QWEN_MODEL_NAME:-qwen3-8b}
+      USE_LOCAL_AI: ${USE_LOCAL_AI:-true}
       AI_MOCK: ${AI_MOCK:-false}
-      GIGACHAT_CREDENTIALS: ${GIGACHAT_CREDENTIALS:-}
-      GIGACHAT_SCOPE: ${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
-      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: railway
       RABBITMQ_PASSWORD: railway_secret
@@ -128,13 +145,16 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
       DEFAULT_REGION: chita
+      QDRANT_URL: http://qdrant:6333
     depends_on:
-      gateway:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
       minio:
         condition: service_healthy
+#      qdrant:
+#        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - railway-network
     restart: unless-stopped
@@ -180,6 +200,7 @@ volumes:
   postgres_data:
   rabbitmq_data:
   minio_data:
+  qdrant_data:
 
 networks:
   railway-network:

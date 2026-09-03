@@ -1,4 +1,4 @@
-"""Instruction generation: GigaChat RAG, document narrative, or facts fallback."""
+"""Instruction generation: local Qwen, document narrative, or facts fallback."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import json
 import logging
 import os
 from typing import Any
+
+from ai_engine import StationInstructionAI
 
 log = logging.getLogger(__name__)
 
@@ -34,12 +36,12 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-def _creds() -> str:
-    return os.getenv("GIGACHAT_CREDENTIALS", "").strip()
-
-
 def _force_mock() -> bool:
     return os.getenv("AI_MOCK", "false").lower() in ("1", "true", "yes")
+
+
+def _use_local_ai() -> bool:
+    return os.getenv("USE_LOCAL_AI", "true").lower() in ("1", "true", "yes")
 
 
 def _narrative(passport_data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -68,7 +70,7 @@ def _match_section_title(title: str) -> str | None:
         if any(a in low for a in aliases):
             return canonical
 
-    # Numbered railway instruction outline: «РАЗДЕЛ 2…», «2.3. …», «Приложение …»
+    # Numbered railway instruction outline
     if "раздел 1" in low or low.startswith("1."):
         return SECTIONS[0]
     if "раздел 2" in low or low.startswith("2."):
@@ -107,7 +109,7 @@ def from_narrative(passport_data: dict[str, Any], items: list[dict[str, Any]]) -
         if buckets[name]:
             document_sections[name] = "\n\n".join(buckets[name])
 
-    # If almost nothing mapped — distribute whole narrative across canonical sections
+    # Fallback: distribute whole narrative across canonical sections
     if len(document_sections) < 2:
         document_sections = {}
         chunks = [f"{t}\n\n{x}" for t, x in ((i.get("title"), i.get("text")) for i in items) if x]
@@ -116,7 +118,7 @@ def from_narrative(passport_data: dict[str, Any], items: list[dict[str, Any]]) -
         per = max(1, (len(chunks) + len(SECTIONS) - 1) // len(SECTIONS))
         idx = 0
         for name in SECTIONS:
-            part = chunks[idx : idx + per]
+            part = chunks[idx: idx + per]
             idx += per
             if part:
                 document_sections[name] = "\n\n---\n\n".join(part)
@@ -160,7 +162,7 @@ def from_facts(passport_data: dict[str, Any]) -> dict[str, Any]:
             f"Организация: {company or 'н/д'}. Станция примыкания: {station}.\n\n"
             f"На основании извлечённых данных исходного документа:\n{facts_block}\n\n"
             f"Раздел подготовлен в режиме фактов (без LLM). "
-            f"Для полноценной генерации задайте GIGACHAT_CREDENTIALS и AI_MOCK=false."
+            f"Для полноценной генерации используйте локальную модель Qwen (USE_LOCAL_AI=true)."
         )
 
     return {
@@ -195,146 +197,33 @@ def mock_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_section_context(passport_data: dict[str, Any], section_name: str) -> str:
-    """Compact context for LLM: meta + matching narrative chunks + available facts."""
-    meta = passport_data.get("meta") or {}
-    parts = [
-        f"станция: {meta.get('station_name') or 'н/д'}",
-        f"организация: {meta.get('company_name') or 'н/д'}",
-        f"пути: {meta.get('path_numbers') or 'н/д'}",
-        f"целевой раздел: {section_name}",
-    ]
-
-    aliases = _SECTION_ALIASES.get(section_name, ())
-    narrative_bits: list[str] = []
-    for item in _narrative(passport_data):
-        title = str(item.get("title") or "")
-        text = str(item.get("text") or "")
-        low = title.lower()
-        if any(a in low for a in aliases) or _match_section_title(title) == section_name:
-            narrative_bits.append(f"### {title}\n{text[:3500]}")
-        if len(narrative_bits) >= 4:
-            break
-    if not narrative_bits:
-        for item in _narrative(passport_data)[:3]:
-            narrative_bits.append(
-                f"### {item.get('title')}\n{str(item.get('text') or '')[:2000]}"
-            )
-
-    if narrative_bits:
-        parts.append("Фрагменты исходного документа:\n" + "\n\n".join(narrative_bits))
-
-    facts: list[str] = []
-    for key, value in passport_data.items():
-        if not key.startswith("section_") or not isinstance(value, dict):
-            continue
-        for leaf_id, leaf in value.items():
-            if isinstance(leaf, dict) and leaf.get("available"):
-                facts.append(f"{leaf_id}: {json.dumps(leaf.get('data'), ensure_ascii=False)}")
-            if len(facts) >= 25:
-                break
-    if facts:
-        parts.append("Структурированные факты:\n" + "\n".join(facts))
-
-    return "\n\n".join(parts)
-
-
-def gigachat_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
-    """Call GigaChat directly (no Qdrant / local embeddings required)."""
-    from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_gigachat.chat_models import GigaChat
-
-    creds = _creds()
-    scope = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS").strip() or "GIGACHAT_API_PERS"
-    llm = GigaChat(
-        credentials=creds,
-        verify_ssl_certs=False,
-        scope=scope,
-        temperature=0.3,
-        timeout=180,
-    )
-
+def local_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
+    """Generate instruction sections using local Qwen via OpenAI-compatible API."""
     meta = passport_data.get("meta") or {}
     station_name = meta.get("station_name") or "Неизвестная станция"
 
-    document_sections: dict[str, str] = {}
-    validation_errors: dict[str, str] = {}
+    qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
+    api_url = os.getenv("AI_API_URL", "http://host.docker.internal:11435/v1")
+    api_key = os.getenv("AI_API_KEY", "sk-local-key")
+    model_name = os.getenv("QWEN_MODEL_NAME", "qwen3-8b")
 
-    system = (
-        "Ты — ведущий инженер-технолог железнодорожного транспорта. "
-        "Пиши раздел местной инструкции официально-деловым стилем: развёрнуто, "
-        "со ссылками на нормы там, где уместно. Отвечай только текстом раздела. "
-        "Не используй Markdown: без **, *, #, ##, списков-тире в markdown-синтаксисе. "
-        "Подзаголовки пиши обычной строкой (например: «1.1. Местоположение примыкания»). "
-        "Не ссылайся на таблицы и приложения — они будут вставлены отдельно из техпаспорта."
+    ai = StationInstructionAI(
+        qdrant_url=qdrant_url,
+        api_url=api_url,
+        api_key=api_key,
+        model_name=model_name
     )
 
-    for section in SECTIONS:
-        context = _build_section_context(passport_data, section)
-        try:
-            resp = llm.invoke(
-                [
-                    SystemMessage(content=system),
-                    HumanMessage(
-                        content=(
-                            f"Сгенерируй текст раздела «{section}» "
-                            f"для станции «{station_name}».\n\n{context}"
-                        )
-                    ),
-                ]
-            )
-            text = getattr(resp, "content", None) or str(resp)
-            document_sections[section] = text.strip() if isinstance(text, str) else str(text)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("GigaChat section failed: %s", section)
-            document_sections[section] = "[ОШИБКА ГЕНЕРАЦИИ GIGACHAT]"
-            validation_errors[section] = str(exc)
-
-    return {
-        "status": "success" if not validation_errors else "completed_with_errors",
-        "station": station_name,
-        "document_sections": document_sections,
-        "validation_errors": validation_errors,
-        "mode": "gigachat",
-    }
-
-
-def real_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
-    """Prefer lightweight GigaChat; fall back to full RAG engine if available."""
-    try:
-        return gigachat_generate(passport_data)
-    except Exception:
-        log.exception("Lightweight GigaChat failed — trying RAG engine")
-
-    from ai_engine import StationInstructionAI
-
-    creds = _creds()
-    qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
-    ai = StationInstructionAI(gigachat_credentials=creds, qdrant_url=qdrant_url)
-
-    meta = passport_data.get("meta") or {}
-    station_name = meta.get("station_name", "Неизвестная станция")
-
-    narrative = _narrative(passport_data)
-    enriched: dict[str, Any] = dict(passport_data)
-    if narrative:
-        enriched = {
-            **passport_data,
-            "source_narrative_excerpt": [
-                {"title": n.get("title"), "text": str(n.get("text") or "")[:2500]}
-                for n in narrative[:12]
-            ],
-        }
-
     document_sections: dict[str, str] = {}
     validation_errors: dict[str, str] = {}
 
     for section in SECTIONS:
         try:
-            document_sections[section] = ai.generate_section(section, enriched)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("AI section failed: %s", section)
-            document_sections[section] = "[ОШИБКА ГЕНЕРАЦИИ СЕРВИСОМ]"
+            log.info("Generating section: %s", section)
+            document_sections[section] = ai.generate_section(section, passport_data)
+        except Exception as exc:
+            log.exception("Local AI section failed: %s", section)
+            document_sections[section] = f"[ОШИБКА ГЕНЕРАЦИИ: {str(exc)}]"
             validation_errors[section] = str(exc)
 
     return {
@@ -342,25 +231,29 @@ def real_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
         "station": station_name,
         "document_sections": document_sections,
         "validation_errors": validation_errors,
-        "mode": "gigachat_rag",
+        "mode": "local_qwen",
     }
 
 
 def generate_instruction(passport_data: dict[str, Any]) -> dict[str, Any]:
+    """Main entry point: choose generation mode."""
     narrative = _narrative(passport_data)
 
+    # 1. Mock mode (for testing without AI)
     if _force_mock():
         log.info("AI_MOCK=true — deterministic mock generator")
         return mock_generate(passport_data)
 
-    creds = _creds()
-    if creds and creds != "YOUR_GIGACHAT_TOKEN_HERE":
+    # 2. Local AI mode (default)
+    if _use_local_ai():
         try:
-            log.info("Using GigaChat RAG generator")
-            return real_generate(passport_data)
-        except Exception:
-            log.exception("GigaChat failed — falling back to document/facts mode")
+            log.info("Using local Qwen via OpenAI-compatible API")
+            return local_generate(passport_data)
+        except Exception as e:
+            log.exception("Local AI failed — falling back to document/facts mode")
+            # fall through to fallback modes
 
+    # 3. Document narrative mode (no AI, use uploaded document text)
     if _narrative_substance(narrative):
         log.info(
             "Using document narrative (%s sections, ~%s chars)",
@@ -369,6 +262,7 @@ def generate_instruction(passport_data: dict[str, Any]) -> dict[str, Any]:
         )
         return from_narrative(passport_data, narrative)
 
+    # 4. Facts mode (last resort)
     log.info("Using structured facts generator")
     return from_facts(passport_data)
 
