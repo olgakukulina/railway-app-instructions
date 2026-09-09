@@ -21,11 +21,19 @@ SYSTEM_PROMPT = """Ты — ведущий инженер-технолог же�
 2. Используй данные из техпаспорта КАК ИСХОДНЫЕ ФАКТЫ.
 3. НЕ КОПИРУЙ данные дословно, переформулируй.
 4. НЕ ИСПОЛЬЗУЙ Markdown и списки.
+5. НЕ ПИШИ заголовок раздела, слово «ИНСТРУКЦИЯ», нумерацию «РАЗДЕЛ N» и вообще
+   любое название документа — их добавляет система автоматически. Начинай сразу
+   с содержательного текста раздела.
+6. НЕ ПЕРЕПИСЫВАЙ построчно таблицы, перечни путей, пикетов (вида «пк00+33.54»)
+   и номера стрелочных переводов — обобщи их одним-двумя предложениями своими
+   словами, подробные данные уже вынесены в отдельные таблицы документа.
+7. Ответ должен содержать ТОЛЬКО связный текст раздела "{section_name}", без
+   упоминания других разделов инструкции.
 
-ДАННЫЕ ИЗ ТЕХПАСПОРТА:
+ДАННЫЕ ИЗ ТЕХПАСПОРТА (используй как факты, не копируй построчно):
 {passport_data}
 
-ПРИМЕР СТИЛЯ:
+ПРИМЕР СТИЛЯ (только стиль, не копировать содержание):
 {references}
 """
 
@@ -36,7 +44,7 @@ class StationInstructionAI:
             qdrant_url: str = "http://qdrant:6333",
             api_url: str = "http://host.docker.internal:11435/v1",
             api_key: str = "sk-local-key",
-            model_name: str = "qwen3-8b"
+            model_name: str = "qwen2.5:3b"
     ):
         self.collection_name = "station_instructions"
         self.model_name = model_name
@@ -67,7 +75,17 @@ class StationInstructionAI:
         text = re.sub(r'\s+([.,!?;:])', r'\1', text)
         return text.strip()
 
-    def _extract_important_facts(self, passport_data: dict, section_name: str, max_chars: int = 6000) -> str:
+    _PIKET_RE = re.compile(r'пк\s*\d+\+\d+', re.IGNORECASE)
+
+    def _looks_like_table_row(self, text: str) -> bool:
+        """Отсекаем сырые строки таблиц (пикеты, номера путей) — их не нужно
+        скармливать модели дословно, она всё равно просто перепишет их как есть."""
+        if len(self._PIKET_RE.findall(text)) >= 2:
+            return True
+        digit_ratio = sum(ch.isdigit() for ch in text) / max(len(text), 1)
+        return digit_ratio > 0.3
+
+    def _extract_important_facts(self, passport_data: dict, section_name: str, max_chars: int = 2500) -> str:
         parts = []
         seen = set()
 
@@ -104,7 +122,7 @@ class StationInstructionAI:
             sentences = re.split(r'[.!?]\s*', text)
             for sentence in sentences:
                 sentence = self._clean_text(sentence)
-                if len(sentence) < 20:
+                if len(sentence) < 20 or self._looks_like_table_row(sentence):
                     continue
 
                 if sentence not in seen:
@@ -125,7 +143,7 @@ class StationInstructionAI:
                     text = item.get("text", "")
                     if text and isinstance(text, str):
                         text = self._clean_text(text)
-                        if len(text) > 30 and text not in seen:
+                        if len(text) > 30 and not self._looks_like_table_row(text) and text not in seen:
                             parts.append(text[:500])
                             seen.add(text)
                             if len(" ".join(parts)) > max_chars:
@@ -175,7 +193,7 @@ class StationInstructionAI:
             log.info(f"=== passport_data keys: {list(passport_data.keys())} ===")
             log.info(f"=== sections count: {len(passport_data.get('sections', []))} ===")
 
-            passport_context = self._extract_important_facts(passport_data, section_name, max_chars=6000)
+            passport_context = self._extract_important_facts(passport_data, section_name, max_chars=2500)
             references = self._retrieve_references(section_name)
 
             prompt = SYSTEM_PROMPT.format(

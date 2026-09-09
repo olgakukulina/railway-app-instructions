@@ -411,13 +411,50 @@ h1 { margin: 0; color: #101827; }
   left: -10000px;
   width: 794px;
   min-height: 1123px;
-  padding: 70px 76px;
-  white-space: pre-wrap;
+  padding: 64px 72px;
   color: #111827;
   background: white;
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 15px;
-  line-height: 1.55;
+  font-family: 'Times New Roman', Georgia, serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.pdf-export-document .pdf-title-block {
+  text-align: center;
+  margin-bottom: 18px;
+}
+.pdf-export-document .pdf-title-line {
+  margin: 0 0 6px;
+  font-weight: 700;
+  font-size: 17px;
+}
+.pdf-export-document .pdf-title-line:first-child {
+  font-size: 22px;
+}
+.pdf-export-document .pdf-title-subject {
+  margin: 16px 0 0;
+  font-weight: 700;
+  font-size: 17px;
+}
+.pdf-export-document .pdf-title-rule {
+  border: none;
+  border-top: 1px solid #111827;
+  margin: 24px 0 22px;
+}
+.pdf-export-document .pdf-section-heading {
+  text-align: center;
+  font-weight: 700;
+  font-size: 17px;
+  margin: 22px 0 12px;
+}
+.pdf-export-document .pdf-sub-heading {
+  font-weight: 700;
+  font-size: 16px;
+  margin: 16px 0 8px;
+}
+.pdf-export-document .pdf-paragraph {
+  margin: 0 0 10px;
+  text-align: justify;
+  text-indent: 1.25cm;
 }
 
 @media (max-width: 1100px) {

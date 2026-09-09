@@ -19,6 +19,49 @@ _TABLE_REF_RE = re.compile(
     r"(?im)^\s*(см\.?\s*)?таблиц\w*\s+\d+(?:\.\d+)?.*$"
 )
 
+# Иногда локальная модель, вместо связного текста раздела, вставляет свой
+# собственный заголовок документа/раздела или дословно пересказывает сырые
+# табличные данные из техпаспорта (пикеты, номера путей). Это ломает вёрстку
+# итогового документа — такие строки нужно вычищать до сборки.
+_PREAMBLE_LINE_RE = re.compile(
+    r"(?im)^\s*(ИНСТРУКЦИЯ\b|"
+    r"о порядке обслуживания и организации движения|"
+    r"на железнодорожном пути необщего пользования)"
+)
+_SECTION_HEADER_LINE_RE = re.compile(r"(?im)^\s*РАЗДЕЛ\s+\d+[.\s].*$")
+_CANONICAL_TITLE_LINE_RE = re.compile(
+    "(?im)^\\s*(?:" + "|".join(re.escape(t) for t in SECTION_ORDER) + ")\\s*$"
+)
+_PIKET_RE = re.compile(r"пк\s*\d+\+\d+", re.IGNORECASE)
+
+
+def _looks_like_table_dump(line: str) -> bool:
+    if len(_PIKET_RE.findall(line)) >= 2:
+        return True
+    digits = sum(ch.isdigit() for ch in line)
+    return len(line) > 30 and digits / len(line) > 0.3
+
+
+def _strip_generated_artifacts(text: str) -> str:
+    """Убирает заголовки документа/раздела и сырые табличные дампы, которые
+    иногда просачиваются в текст раздела из ответа модели."""
+    kept = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            kept.append(line)
+            continue
+        if _PREAMBLE_LINE_RE.match(stripped):
+            continue
+        if _SECTION_HEADER_LINE_RE.match(stripped):
+            continue
+        if _CANONICAL_TITLE_LINE_RE.match(stripped):
+            continue
+        if _looks_like_table_dump(stripped):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
 
 def _map_table_to_section(number: str, title: str) -> str:
     """Куда положить таблицу техпаспорта в структуре инструкции."""
@@ -37,7 +80,7 @@ def _map_table_to_section(number: str, title: str) -> str:
 def _clean_ai_text(text: str) -> str:
     """Убираем отсылки к таблицам и оборванные хвосты вроде «Согласно ведомости (»."""
     lines = []
-    for line in str(text or "").splitlines():
+    for line in _strip_generated_artifacts(str(text or "")).splitlines():
         if _TABLE_REF_RE.match(line.strip()):
             continue
         line = re.sub(

@@ -15,7 +15,7 @@ app = FastAPI(title="Генератор Инструкций Станций", ve
 # Берём из .env или используем значения по умолчанию
 API_URL = os.getenv("AI_API_URL", "http://host.docker.internal:11435/v1")
 API_KEY = os.getenv("AI_API_KEY", "sk-local-key")
-MODEL_NAME = os.getenv("QWEN_MODEL_NAME", "qwen3-8b")
+MODEL_NAME = os.getenv("QWEN_MODEL_NAME", "qwen2.5:3b")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 
 class GenerateRequest(BaseModel):

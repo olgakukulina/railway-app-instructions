@@ -205,7 +205,7 @@ def local_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
     qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
     api_url = os.getenv("AI_API_URL", "http://host.docker.internal:11435/v1")
     api_key = os.getenv("AI_API_KEY", "sk-local-key")
-    model_name = os.getenv("QWEN_MODEL_NAME", "qwen3-8b")
+    model_name = os.getenv("QWEN_MODEL_NAME", "qwen2.5:3b")
 
     ai = StationInstructionAI(
         qdrant_url=qdrant_url,

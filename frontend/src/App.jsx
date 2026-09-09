@@ -969,6 +969,7 @@ export default function App() {
         content: instruction.content,
         title: getTaskTitle(activeTask, instruction),
         station: instruction.station || getTaskStation(activeTask) || 'Станция',
+        organization: instruction.company || '',
       })
     } catch (error) {
       window.alert(error.message || 'Не удалось сформировать PDF.')
@@ -986,6 +987,7 @@ export default function App() {
         content: instruction.content,
         title: getTaskTitle(activeTask, instruction),
         station: instruction.station || getTaskStation(activeTask) || 'Станция',
+        organization: instruction.company || '',
       })
     } catch (error) {
       window.alert(error.message || 'Не удалось сформировать DOCX.')
