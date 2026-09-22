@@ -31,8 +31,11 @@ def rabbit_params() -> pika.ConnectionParameters:
             os.getenv("RABBITMQ_USER", "railway"),
             os.getenv("RABBITMQ_PASSWORD", "railway_secret"),
         ),
-        heartbeat=60,
+        heartbeat=600,  # ← УВЕЛИЧЕНО с 60 до 600 (10 минут) — генерация длится долго
         blocked_connection_timeout=300,
+        connection_attempts=10,
+        retry_delay=2,
+        socket_timeout=600,
     )
 
 
@@ -81,19 +84,73 @@ def publish_event(channel, exchange: str, routing_key: str, event: dict[str, Any
 
 
 def consume_queue(queue_name: str, handler: Callable[[dict[str, Any]], None]) -> None:
-    connection = connect_with_retry()
-    channel = connection.channel()
-    channel.basic_qos(prefetch_count=1)
 
-    def _on_message(ch, method, properties, body):  # noqa: ANN001
+    max_reconnects = 20
+    reconnect_delay = 2.0
+
+    for attempt in range(1, max_reconnects + 1):
+        connection = None
         try:
-            event = json.loads(body.decode("utf-8"))
-            handler(event)
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-        except Exception:  # noqa: BLE001
-            log.exception("Failed to process message from %s", queue_name)
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            connection = connect_with_retry()
+            channel = connection.channel()
 
-    channel.basic_consume(queue=queue_name, on_message_callback=_on_message)
-    log.info("Listening on queue %s", queue_name)
-    channel.start_consuming()
+            channel.basic_qos(prefetch_count=1)
+
+            def _on_message(ch, method, properties, body):
+                try:
+                    event = json.loads(body.decode("utf-8"))
+                except Exception:
+                    log.exception("Failed to parse message from %s", queue_name)
+                    try:
+                        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                    except Exception:
+                        log.warning("Nack failed (соединение потеряно)")
+                    return
+
+                ack_ok = False
+                try:
+                    ch.basic_ack(delivery_tag=method.delivery_tag)
+                    ack_ok = True
+                except Exception:
+                    log.warning(
+                        "Ack failed — соединение потеряно, но сообщение будет "
+                        "повторно доставлено (это нормально для этого воркера)"
+                    )
+
+                try:
+                    handler(event)
+                except Exception:
+                    log.exception(
+                        "Handler failed for %s (сообщение уже ack'нуто)",
+                        queue_name,
+                    )
+
+            channel.basic_consume(queue=queue_name, on_message_callback=_on_message)
+            log.info("Listening on queue %s (attempt %s/%s)", queue_name, attempt, max_reconnects)
+            channel.start_consuming()
+
+        except KeyboardInterrupt:
+            log.info("Interrupted, stopping consumer")
+            break
+        except (pika.exceptions.StreamLostError,
+                pika.exceptions.ChannelWrongStateError,
+                pika.exceptions.ConnectionClosedByBroker,
+                pika.exceptions.AMQPConnectionError) as e:
+            log.warning(
+                "RabbitMQ connection lost (attempt %s/%s): %s. Reconnecting in %.1fs...",
+                attempt, max_reconnects, e, reconnect_delay
+            )
+            time.sleep(reconnect_delay)
+            continue
+        except Exception as e:
+            log.exception("Fatal error in consumer, reconnecting: %s", e)
+            time.sleep(reconnect_delay)
+            continue
+        finally:
+            try:
+                if connection and connection.is_open:
+                    connection.close()
+            except Exception:
+                pass
+
+    log.error("Consumer for %s stopped after %s attempts", queue_name, max_reconnects)
