@@ -14,12 +14,12 @@ log = logging.getLogger(__name__)
 
 DEBUG_NO_LLM = os.getenv("DEBUG_NO_LLM", "false").lower() in ("1", "true", "yes")
 
-MAX_NARRATIVE_CHARS = 900
-MAX_REFERENCE_CHARS = 800
-MAX_TABLE_ROWS = 12
-MAX_FACTS_CHARS = 1400
-MIN_SUBSECTION_CHARS = 800
-MAX_OUTPUT_TOKENS = 1500
+
+MAX_NARRATIVE_CHARS = 5000
+MAX_REFERENCE_CHARS = 2000
+MAX_TABLE_ROWS = 100
+MAX_FACTS_CHARS = 20000
+MAX_OUTPUT_TOKENS = 4000
 
 STUB_NO_DATA = (
     "Фактов в техпаспорте недостаточно для генерации данного подраздела. "
@@ -118,6 +118,38 @@ SUBSECTION_HINTS = {
     "5.1": ["Перечисли правила охраны труда", "Опиши меры безопасности при закреплении вагонов", "Опиши порядок сцепления и расцепления вагонов"],
     "5.2": ["Перечисли негабаритные и опасные места на пути", "Опиши, как обозначаются негабаритные места", "Опиши порядок проследования технологических проездов"],
     "5.3": ["Перечисли требования, которые обеспечивает владелец пути", "Укажи, кто отвечает за безопасные условия труда", "Перечисли требования по освещению и содержанию пути"],
+}
+
+SUBSECTION_TARGET_CHARS = {
+    "1.1": 200,
+    "1.2": 1000,
+    "1.3": 500,
+    "1.4": 2000,
+    "1.5": 800,
+    "1.6": 800,
+    "1.7": 300,
+    "1.8": 2500,
+    "1.9": 1200,
+    "2.1": 300,
+    "2.2": 500,
+    "2.3": 700,
+    "2.4": 900,
+    "2.5": 600,
+    "2.6": 1800,
+    "2.7": 3000,
+    "2.8": 1200,
+    "2.9": 400,
+    "3.1": 700,
+    "3.2": 1200,
+    "3.3": 300,
+    "3.4": 600,
+    "4.1": 1200,
+    "4.2": 2000,
+    "4.3": 1800,
+    "4.4": 800,
+    "5.1": 1500,
+    "5.2": 1800,
+    "5.3": 800,
 }
 
 SUBSECTION_KEYWORDS = {
@@ -288,25 +320,24 @@ class StationInstructionAI:
 
         if not keys_lower and not table_kw:
             return ""
-
         parts = []
-
         for source_name, source in (("meta", facts.get("meta", {})),
                                     ("general", facts.get("general", {}))):
             for path, value in self._iter_leaves(source):
                 last = path.split(".")[-1].lower()
-                value_str = str(value) if not isinstance(value, (dict, list)) else json.dumps(value, ensure_ascii=False)
+                value_str = (
+                    str(value) if not isinstance(value, (dict, list))
+                    else json.dumps(value, ensure_ascii=False)
+                )
                 if any(kw in last for kw in keys_lower) or any(kw in value_str.lower() for kw in keys_lower):
                     if isinstance(value, (dict, list)):
                         parts.append(f"[{source_name}.{path}]\n{json.dumps(value, ensure_ascii=False)}")
                     else:
                         parts.append(f"[{source_name}.{path}]: {value}")
-
         for item in facts.get("narrative", []):
             text = item.get("text", "")
             if any(kw in text.lower() for kw in keys_lower):
                 parts.append(f"[текст техпаспорта]:\n{text[:MAX_NARRATIVE_CHARS]}")
-
         if table_kw:
             for t in facts.get("all_tables", []):
                 title = str(t.get("title", "")).lower()
@@ -318,24 +349,37 @@ class StationInstructionAI:
             result = result[:MAX_FACTS_CHARS]
         return result
 
-    def _retrieve_references(self, section_name: str) -> str:
-        """Достаёт референс стиля из Qdrant. Факты из него использовать НЕЛЬЗЯ."""
+    def _retrieve_references(self, subsection_key: str) -> str:
         try:
-            docs = self.vector_store.similarity_search(section_name, k=1)
+            docs = self.vector_store.similarity_search(subsection_key, k=1)
             if not docs:
                 return ""
             ref = docs[0].page_content.strip()[:MAX_REFERENCE_CHARS]
             log.info(f"=== [ОТЛАДКА] Референс найден: {len(ref)} символов ===")
             return ref
         except Exception as e:
-            log.warning(f"Не удалось получить референс для '{section_name}': {e}")
+            log.warning(f"Не удалось получить референс для '{subsection_key}': {e}")
             return ""
+
+    def _dedupe_lines(self, text: str) -> str:
+        lines = text.split("\n")
+        seen = set()
+        result = []
+        for line in lines:
+            norm = line.strip().lower()
+            if not norm:
+                result.append(line)
+                continue
+            if norm in seen:
+                continue
+            seen.add(norm)
+            result.append(line)
+        return "\n".join(result)
 
     def _generate_subsection(self, section_name: str, subsection_num: str,
                              subsection_title: str, facts_text: str) -> str:
         hints = SUBSECTION_HINTS.get(subsection_num, [])
         hints_text = "\n".join(f"- {h}" for h in hints)
-
         reference = self._retrieve_references(f"{subsection_num} {subsection_title}")
         reference_block = ""
         if reference:
@@ -348,14 +392,16 @@ class StationInstructionAI:
         cfg = SUBSECTION_KEYWORDS.get(subsection_num, {})
         requires_data = cfg.get("requires_data", True)
         has_data = bool(facts_text.strip())
-
         if not has_data and requires_data:
             return STUB_NO_DATA
+        target = SUBSECTION_TARGET_CHARS.get(subsection_num, 800)
+        min_chars = max(150, int(target * 0.8))
+        max_chars = int(target * 1.2)
 
-        if not has_data:
-            data_block = "ДАННЫЕ ИЗ ТЕХПАСПОРТА: отсутствуют."
-        else:
+        if has_data:
             data_block = f"ДАННЫЕ ИЗ ТЕХПАСПОРТА:\n{facts_text}"
+        else:
+            data_block = "ДАННЫЕ ИЗ ТЕХПАСПОРТА: отсутствуют."
 
         prompt = f"""Напиши подраздел {subsection_num} "{subsection_title}" инструкции по эксплуатации железнодорожного пути необщего пользования.
 {reference_block}
@@ -368,7 +414,7 @@ class StationInstructionAI:
 {TYPICAL_NORMS}
 
 ТРЕБОВАНИЯ:
-- Объём: {MIN_SUBSECTION_CHARS}-1200 символов. Не больше — не растягивай, не повторяйся.
+- Объём: {min_chars}-{max_chars} символов. Пиши развёрнуто в этих рамках.
 - Официальный технический язык, как в нормативном документе.
 - ЗАПРЕЩЕНО: выдумывать номера путей, номера стрелочных переводов, номера тупиков, пикеты, названия организаций (типа ООО «ТрансЛогистик»). Используй только то, что есть в ДАННЫХ.
 - РАЗРЕШЕНО: использовать типовые нормативные значения из блока выше, раскрывать общий порядок действий.
@@ -380,13 +426,14 @@ class StationInstructionAI:
         log.info(f"=== [ОТЛАДКА] Подраздел {subsection_num}: {subsection_title} ===")
         log.info(f"=== [ОТЛАДКА] facts_text: {len(facts_text)} символов ===")
         log.info(f"=== [ОТЛАДКА] reference: {len(reference)} символов ===")
+        log.info(f"=== [ОТЛАДКА] target_chars: {target} (min={min_chars}, max={max_chars}) ===")
         log.info(f"=== [ОТЛАДКА] Промпт: {len(prompt)} символов ===")
         log.info("=" * 60)
 
         if DEBUG_NO_LLM:
-            return (f"[ОТЛАДКА] facts_text={len(facts_text)} символов, "
-                    f"reference={len(reference)} символов, "
-                    f"prompt={len(prompt)} символов.")
+            return (f"[ОТЛАДКА] facts_text={len(facts_text)}, "
+                    f"reference={len(reference)}, prompt={len(prompt)}, "
+                    f"target={target}.")
 
         try:
             response = self.client.chat.completions.create(
@@ -395,17 +442,24 @@ class StationInstructionAI:
                     {"role": "system", "content":
                         "Ты пишешь официальные инструкции для железнодорожных путей необщего пользования. "
                         "Используй ТОЛЬКО факты из блока ДАННЫЕ ИЗ ТЕХПАСПОРТА. "
-                        "Если данных нет — используй типовые нормативные значения. "
+                        "Если данных нет — используй типовые нормативные значения из блока выше. "
                         "Никогда не выдумывай номера путей, пикеты, названия организаций. "
                         "Не повторяй один и тот же абзац дважды. Не зацикливайся."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.2,
+                temperature=0.4,
                 max_tokens=MAX_OUTPUT_TOKENS,
                 top_p=0.9,
-                frequency_penalty=0.4,
-                presence_penalty=0.2,
+                frequency_penalty=0.5,
+                presence_penalty=0.3,
             )
+            if getattr(response, "usage", None):
+                log.info(
+                    f"=== [ТОКЕНЫ] {subsection_num}: "
+                    f"prompt={response.usage.prompt_tokens}, "
+                    f"completion={response.usage.completion_tokens}, "
+                    f"total={response.usage.total_tokens} ==="
+                )
 
             result = response.choices[0].message.content
             if not result:
@@ -420,6 +474,7 @@ class StationInstructionAI:
     def _postprocess_text(self, text: str) -> str:
         if not text:
             return ""
+        text = self._dedupe_lines(text)
         text = re.sub(r'\s+', ' ', text)
         text = re.sub(r'\s+([.,!?;:])', r'\1', text)
         return text.strip()
