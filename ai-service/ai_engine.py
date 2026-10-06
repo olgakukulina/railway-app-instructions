@@ -2,6 +2,7 @@ import json
 import os
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
@@ -15,11 +16,11 @@ log = logging.getLogger(__name__)
 DEBUG_NO_LLM = os.getenv("DEBUG_NO_LLM", "false").lower() in ("1", "true", "yes")
 
 
-MAX_NARRATIVE_CHARS = 5000
-MAX_REFERENCE_CHARS = 2000
+MAX_NARRATIVE_CHARS = 3000
+MAX_REFERENCE_CHARS = 800
 MAX_TABLE_ROWS = 100
-MAX_FACTS_CHARS = 20000
-MAX_OUTPUT_TOKENS = 4000
+MAX_FACTS_CHARS = 6000
+MAX_OUTPUT_TOKENS = 3000
 
 STUB_NO_DATA = (
     "Фактов в техпаспорте недостаточно для генерации данного подраздела. "
@@ -39,6 +40,15 @@ TYPICAL_NORMS = """- Максимальная скорость движения 
 - Порядок выезда на путь необщего пользования: по разрешающему показанию светофора, при неисправности — по устному разрешению ДСП.
 - Составитель поездов при движении вагонами вперёд находится на первой по ходу движения подножке вагона, следит за свободностью пути.
 - Состав маневровой бригады: машинист, помощник машиниста, составитель поездов.
+
+НОРМАТИВНЫЕ ССЫЛКИ ДЛЯ РАЗДЕЛА 6:
+- Федеральный закон РФ №17-ФЗ от 10.01.2003 «О железнодорожном транспорте в РФ».
+- Транспортный устав железных дорог Российской Федерации.
+- Правила технической эксплуатации железных дорог РФ, утверждённые приказом Минтранса России от 21.12.2010 №286.
+- Инструкция по движению поездов и маневровой работе на железнодорожном транспорте РФ, утверждённая приказом Минтранса России от 04.06.2012 №162 (приложение №8 к ПТЭ).
+- Инструкция по сигнализации на железнодорожном транспорте РФ, утверждённая приказом Минтранса России от 04.06.2012 №162 (приложение №7 к ПТЭ).
+- Инструкции, указания и распоряжения ОАО «РЖД», МПС, РФ, Дирекции управления движением.
+- Указание МПС №С-175у от 20.02.1992 (по тормозным башмакам).
 """
 
 JUNK_COLUMNS = {"дата внесения изменений", "ф.и.о", "ф.и.о.", "подпись",
@@ -86,6 +96,7 @@ SECTION_STRUCTURE = {
         ("5.2", "Местные особенности"),
         ("5.3", "Ответственность"),
     ],
+    "ДОПОЛНИТЕЛЬНО": [],
 }
 
 SUBSECTION_HINTS = {
@@ -183,6 +194,30 @@ SUBSECTION_KEYWORDS = {
     "5.2": {"keys": ["негабарит", "опасн", "проезд"], "tables": [], "requires_data": False},
     "5.3": {"keys": ["ответствен", "освещен", "содержан"], "tables": [], "requires_data": False},
 }
+
+SECTION6_PROMPT = """Напиши раздел 6 «Дополнительно» инструкции о порядке обслуживания и организации движения на железнодорожном пути необщего пользования.
+
+Раздел должен представлять собой нумерованный список из 6 пунктов (1–6), как в типовой согласованной инструкции:
+
+1. По вопросам, не предусмотренным настоящей инструкцией, работники железнодорожной станции и железнодорожного пути необщего пользования обязаны руководствоваться:
+   - Федеральным Законом Российской Федерации №17-ФЗ от 10.01.2003 «О железнодорожном транспорте в Российской Федерации»;
+   - Транспортным Уставом железных дорог Российской Федерации;
+   - Правилами технической эксплуатации на железных дорогах Российской Федерации, утверждёнными приказом Минтранса России от 21.12.2010 №286;
+   - приложением №8 к ПТЭ — Инструкцией по движению поездов и маневровой работе на железнодорожном транспорте Российской Федерации, утверждённой 04.06.2012 приказом №162 Минтранса России;
+   - приложением №7 к ПТЭ — Инструкцией по сигнализации на железнодорожном транспорте Российской Федерации, утверждённой 04.06.2012 приказом №162 Минтранса России;
+   - инструкциями, указаниями и распоряжениями ОАО «РЖД», МПС, РФ, Дирекции управления движением и другими действующими документами по обеспечению безопасности движения поездов, сохранности вагонного парка и охраны труда.
+
+2. Причастные работники железнодорожной станции, эксплуатационного локомотивного депо и железнодорожного пути необщего пользования обязаны исполнять требования настоящей Инструкции в полном объёме и изучать данную Инструкцию не реже одного раза в год по состоянию на 1 января.
+
+3. На владельца железнодорожного пути необщего пользования возлагается ответственность за подготовку и обучение ответственных работников порядку закрепления и применения норм закрепления подвижного состава на железнодорожных путях необщего пользования, согласно требованиям, отражённым в настоящей Инструкции.
+
+4. Перевод стрелок, закрепление вагонов тормозными башмаками на железнодорожном пути необщего пользования выполняются составителем поездов железнодорожной станции с оплатой по соглашению сторон.
+
+5. Все изменения и дополнения в настоящую Инструкцию вносятся порядком, предусмотренным для разработки и утверждения настоящей Инструкции.
+
+6. С момента ввода в действие настоящей Инструкции требования ранее действовавшей Инструкции о порядке обслуживания и организации движения на железнодорожном пути необщего пользования считать утратившими силу.
+
+Напиши этот раздел официальным техническим языком. Объём — 1400–2000 символов. Не выдумывай названия организаций и номера, не указанные выше. Используй только приведённые нормативные ссылки."""
 
 
 class StationInstructionAI:
@@ -450,8 +485,6 @@ class StationInstructionAI:
                 temperature=0.4,
                 max_tokens=MAX_OUTPUT_TOKENS,
                 top_p=0.9,
-                frequency_penalty=0.5,
-                presence_penalty=0.3,
             )
             if getattr(response, "usage", None):
                 log.info(
@@ -479,9 +512,56 @@ class StationInstructionAI:
         text = re.sub(r'\s+([.,!?;:])', r'\1', text)
         return text.strip()
 
+    def _generate_section6(self) -> str:
+        log.info("=== Генерация раздела 6: ДОПОЛНИТЕЛЬНО ===")
+
+        if DEBUG_NO_LLM:
+            return "[ОТЛАДКА] Раздел 6 генерируется без LLM."
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content":
+                        "Ты пишешь официальные инструкции для железнодорожных путей необщего пользования. "
+                        "Пиши строго по образцу, официальным техническим языком."},
+                    {"role": "user", "content": SECTION6_PROMPT}
+                ],
+                temperature=0.3,
+                max_tokens=MAX_OUTPUT_TOKENS,
+                top_p=0.9,
+            )
+            if getattr(response, "usage", None):
+                log.info(
+                    f"=== [ТОКЕНЫ] 6: "
+                    f"prompt={response.usage.prompt_tokens}, "
+                    f"completion={response.usage.completion_tokens}, "
+                    f"total={response.usage.total_tokens} ==="
+                )
+
+            result = response.choices[0].message.content
+            if not result:
+                return ""
+
+            result = self._clean_text(result)
+            return self._postprocess_text(result)
+        except Exception as e:
+            log.exception(f"Ошибка генерации раздела 6: {e}")
+            return ""
+
     def generate_section(self, section_name: str, passport_data: dict) -> str:
         try:
             log.info(f"=== Генерация раздела: {section_name} ===")
+
+            # Раздел 6 — один сплошной текст, без подразделов
+            if section_name == "ДОПОЛНИТЕЛЬНО":
+                part = self._generate_section6()
+                if part and len(part) > 50:
+                    return f"6. ДОПОЛНИТЕЛЬНО\n\n{part}"
+                else:
+                    log.warning("    Раздел 6: пустой ответ, используется fallback")
+                    return f"6. ДОПОЛНИТЕЛЬНО\n\n{STUB_NO_DATA}"
+
             facts = self._extract_structured_facts(passport_data)
 
             log.info(f"=== [ОТЛАДКА] meta: {facts['meta']} ===")
@@ -491,24 +571,48 @@ class StationInstructionAI:
 
             subsections = SECTION_STRUCTURE.get(section_name, [("1.1", "Общие сведения")])
             log.info(f"Подразделов: {len(subsections)}")
+            jobs = []
+            for num, title in subsections:
+                facts_text = self._facts_for_subsection(facts, num)
+                jobs.append((num, title, facts_text))
 
+            # Запустить генерацию ПАРАЛЛЕЛЬНО
+            results = {}
+            max_workers = min(len(jobs), 1) # поменять значение
+
+            log.info(f"Запуск {len(jobs)} подразделов в {max_workers} потоков")
+
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                future_to_num = {}
+                for num, title, facts_text in jobs:
+                    future = pool.submit(
+                        self._generate_subsection,
+                        section_name=section_name,
+                        subsection_num=num,
+                        subsection_title=title,
+                        facts_text=facts_text,
+                    )
+                    future_to_num[future] = (num, title)
+
+                for future in as_completed(future_to_num):
+                    num, title = future_to_num[future]
+                    try:
+                        part = future.result()
+                        if part and len(part) > 50:
+                            results[num] = (title, part)
+                            log.info(f"    Подраздел {num}: {len(part)} символов")
+                        else:
+                            log.warning(f"    Подраздел {num}: пустой ответ")
+                            results[num] = (title, STUB_NO_DATA)
+                    except Exception as e:
+                        log.exception(f"    Подраздел {num}: ошибка {e}")
+                        results[num] = (title, STUB_NO_DATA)
             parts = []
             for num, title in subsections:
-                log.info(f"  Генерация подраздела {num}: {title}")
-                facts_text = self._facts_for_subsection(facts, num)
-
-                part = self._generate_subsection(
-                    section_name=section_name,
-                    subsection_num=num,
-                    subsection_title=title,
-                    facts_text=facts_text,
-                )
-
-                if part and len(part) > 50:
-                    parts.append(f"{num}. {title}\n\n{part}")
-                    log.info(f"    Подраздел {num}: {len(part)} символов")
+                if num in results:
+                    title, text = results[num]
+                    parts.append(f"{num}. {title}\n\n{text}")
                 else:
-                    log.warning(f"    Подраздел {num}: пустой ответ")
                     parts.append(f"{num}. {title}\n\n{STUB_NO_DATA}")
 
             result = "\n\n".join(parts)

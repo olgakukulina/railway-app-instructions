@@ -730,6 +730,11 @@ class InstructionDocxBuilder:
         tc_pr.append(shd)
 
 
+import logging
+
+log = logging.getLogger(__name__)
+
+
 def generate_docx_bytes(payload: dict[str, Any] | str) -> bytes:
     """
     Основная точка входа модуля.
@@ -737,13 +742,23 @@ def generate_docx_bytes(payload: dict[str, Any] | str) -> bytes:
     if isinstance(payload, str):
         payload = json.loads(payload)
 
+    log.info("=== [DEBUG] payload keys: %s", list(payload.keys()))
+    log.info("=== [DEBUG] payload.appendices = %s", len(payload.get("appendices", [])))
+    if payload.get("appendices"):
+        log.info("=== [DEBUG] first appendix title: %s", payload["appendices"][0].get("title"))
+        log.info("=== [DEBUG] first appendix type: %s", payload["appendices"][0].get("type"))
+
     doc_data = InstructionDocument.from_dict(payload)
+    log.info("=== [DEBUG] doc_data.appendices = %s", len(doc_data.appendices))
+    log.info("=== [DEBUG] doc_data.sections = %s", len(doc_data.sections))
+
     document = InstructionDocxBuilder(doc_data).build()
+    log.info("=== [DEBUG] built document: paragraphs=%s, tables=%s",
+             len(document.paragraphs), len(document.tables))
 
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
-
 
 def generate_docx_file(payload: dict[str, Any] | str, output_path: str) -> str:
     """Обёртка над generate_docx_bytes для сохранения сразу на диск."""

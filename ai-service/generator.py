@@ -8,6 +8,7 @@ import os
 from typing import Any
 
 from ai_engine import StationInstructionAI
+from appendices_builder import build_appendices
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ SECTIONS = [
     "МАНЕВРОВАЯ РАБОТА",
     "ЗАКРЕПЛЕНИЕ ВАГОНОВ",
     "ТЕХНИКА БЕЗОПАСНОСТИ",
+    "ДОПОЛНИТЕЛЬНО",
 ]
 
 _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
@@ -33,6 +35,7 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
     "МАНЕВРОВАЯ РАБОТА": ("маневро",),
     "ЗАКРЕПЛЕНИЕ ВАГОНОВ": ("закреплени",),
     "ТЕХНИКА БЕЗОПАСНОСТИ": ("техника безопасности", "охрана труда", "требования безопасности"),
+    "ДОПОЛНИТЕЛЬНО": ("дополнительно", "дополнительные", "приложения"),
 }
 
 
@@ -70,7 +73,6 @@ def _match_section_title(title: str) -> str | None:
         if any(a in low for a in aliases):
             return canonical
 
-    # Numbered railway instruction outline
     if "раздел 1" in low or low.startswith("1."):
         return SECTIONS[0]
     if "раздел 2" in low or low.startswith("2."):
@@ -81,6 +83,8 @@ def _match_section_title(title: str) -> str | None:
         return SECTIONS[3]
     if "раздел 5" in low or low.startswith("5.") or "охран" in low:
         return SECTIONS[4]
+    if "раздел 6" in low or low.startswith("6.") or "дополнительно" in low:
+        return SECTIONS[5]
     return None
 
 
@@ -109,7 +113,6 @@ def from_narrative(passport_data: dict[str, Any], items: list[dict[str, Any]]) -
         if buckets[name]:
             document_sections[name] = "\n\n".join(buckets[name])
 
-    # Fallback: distribute whole narrative across canonical sections
     if len(document_sections) < 2:
         document_sections = {}
         chunks = [f"{t}\n\n{x}" for t, x in ((i.get("title"), i.get("text")) for i in items) if x]
@@ -131,6 +134,7 @@ def from_narrative(passport_data: dict[str, Any], items: list[dict[str, Any]]) -
         "status": "success",
         "station": station,
         "document_sections": document_sections,
+        "appendices": build_appendices(passport_data),
         "validation_errors": {},
         "mode": "document_narrative",
     }
@@ -169,6 +173,7 @@ def from_facts(passport_data: dict[str, Any]) -> dict[str, Any]:
         "status": "success",
         "station": station,
         "document_sections": document_sections,
+        "appendices": build_appendices(passport_data),
         "validation_errors": {},
         "mode": "facts",
     }
@@ -192,6 +197,7 @@ def mock_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
         "status": "success",
         "station": station,
         "document_sections": document_sections,
+        "appendices": build_appendices(passport_data),
         "validation_errors": {},
         "mode": "mock",
     }
@@ -226,10 +232,18 @@ def local_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
             document_sections[section] = f"[ОШИБКА ГЕНЕРАЦИИ: {str(exc)}]"
             validation_errors[section] = str(exc)
 
+    # Сборка приложений
+    try:
+        appendices = build_appendices(passport_data)
+    except Exception as exc:
+        log.exception("appendices_builder failed")
+        appendices = []
+
     return {
         "status": "success" if not validation_errors else "completed_with_errors",
         "station": station_name,
         "document_sections": document_sections,
+        "appendices": appendices,
         "validation_errors": validation_errors,
         "mode": "local_qwen",
     }
@@ -239,21 +253,17 @@ def generate_instruction(passport_data: dict[str, Any]) -> dict[str, Any]:
     """Main entry point: choose generation mode."""
     narrative = _narrative(passport_data)
 
-    # 1. Mock mode (for testing without AI)
     if _force_mock():
         log.info("AI_MOCK=true — deterministic mock generator")
         return mock_generate(passport_data)
 
-    # 2. Local AI mode (default)
     if _use_local_ai():
         try:
             log.info("Using local Qwen via OpenAI-compatible API")
             return local_generate(passport_data)
         except Exception as e:
             log.exception("Local AI failed — falling back to document/facts mode")
-            # fall through to fallback modes
 
-    # 3. Document narrative mode (no AI, use uploaded document text)
     if _narrative_substance(narrative):
         log.info(
             "Using document narrative (%s sections, ~%s chars)",
@@ -262,7 +272,6 @@ def generate_instruction(passport_data: dict[str, Any]) -> dict[str, Any]:
         )
         return from_narrative(passport_data, narrative)
 
-    # 4. Facts mode (last resort)
     log.info("Using structured facts generator")
     return from_facts(passport_data)
 
