@@ -204,7 +204,6 @@ def mock_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
 
 
 def local_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
-    """Generate instruction sections using local Qwen via OpenAI-compatible API."""
     meta = passport_data.get("meta") or {}
     station_name = meta.get("station_name") or "Неизвестная станция"
 
@@ -220,24 +219,26 @@ def local_generate(passport_data: dict[str, Any]) -> dict[str, Any]:
         model_name=model_name
     )
 
+    try:
+        appendices = build_appendices(passport_data)
+    except Exception as exc:
+        log.exception("appendices_builder failed")
+        appendices = []
+
+    appendices_titles = [f"Приложение {i + 1}. {a['title']}" for i, a in enumerate(appendices)]
+
     document_sections: dict[str, str] = {}
     validation_errors: dict[str, str] = {}
 
     for section in SECTIONS:
         try:
             log.info("Generating section: %s", section)
-            document_sections[section] = ai.generate_section(section, passport_data)
+            # Передаем appendices_titles третьим аргументом!
+            document_sections[section] = ai.generate_section(section, passport_data, appendices_titles)
         except Exception as exc:
             log.exception("Local AI section failed: %s", section)
             document_sections[section] = f"[ОШИБКА ГЕНЕРАЦИИ: {str(exc)}]"
             validation_errors[section] = str(exc)
-
-    # Сборка приложений
-    try:
-        appendices = build_appendices(passport_data)
-    except Exception as exc:
-        log.exception("appendices_builder failed")
-        appendices = []
 
     return {
         "status": "success" if not validation_errors else "completed_with_errors",
