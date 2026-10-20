@@ -259,7 +259,7 @@ def _build_brake_calculation(passport_data: dict) -> dict | None:
         rows.append([f"Путь №{path_num}: максимальный уклон, тыс.", str(slope)])
         rows.append([
             f"Путь №{path_num}: формула расчёта",
-            "K = (N(4*i+1))/200 + (7*N)/200",
+            "K = N·(4i + 1)/200 + 7N/200",
         ])
         for axes in (4, 8, 12, 20, 24, 28):
             shoes = calculate_brake_shoes(axes, slope)

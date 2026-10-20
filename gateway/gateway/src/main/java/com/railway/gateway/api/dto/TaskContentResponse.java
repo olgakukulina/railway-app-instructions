@@ -2,6 +2,7 @@ package com.railway.gateway.api.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import java.util.List;
 import java.util.UUID;
 
 @Schema(description = "Generated instruction text for in-browser viewing/editing")
@@ -19,6 +20,9 @@ public record TaskContentResponse(
         String company,
 
         @Schema(description = "Document region template key", example = "chita")
-        String region
+        String region,
+
+        @Schema(description = "Tables from sections and appendices, in document order")
+        List<TaskContentTable> tables
 ) {
 }

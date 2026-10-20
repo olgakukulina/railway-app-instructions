@@ -967,6 +967,7 @@ export default function App() {
     try {
       await exportInstructionPdf({
         content: instruction.content,
+        tables: instruction.tables,
         title: getTaskTitle(activeTask, instruction),
         station: instruction.station || getTaskStation(activeTask) || 'Станция',
       })
@@ -984,6 +985,7 @@ export default function App() {
     try {
       await exportInstructionDocx({
         content: instruction.content,
+        tables: instruction.tables,
         title: getTaskTitle(activeTask, instruction),
         station: instruction.station || getTaskStation(activeTask) || 'Станция',
       })

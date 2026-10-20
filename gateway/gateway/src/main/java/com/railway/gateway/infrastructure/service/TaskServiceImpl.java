@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.railway.gateway.api.dto.CreateTaskResponse;
 import com.railway.gateway.api.dto.TaskContentRequest;
 import com.railway.gateway.api.dto.TaskContentResponse;
+import com.railway.gateway.api.dto.TaskContentTable;
 import com.railway.gateway.api.dto.TaskDetailsResponse;
 import com.railway.gateway.api.dto.TaskPageResponse;
 import com.railway.gateway.api.dto.TaskStatusResponse;
@@ -290,7 +291,8 @@ public class TaskServiceImpl implements TaskService {
                     request.content(),
                     textOrEmpty(root, "station_name"),
                     textOrEmpty(root, "organization"),
-                    textOrEmpty(root, "region")
+                    textOrEmpty(root, "region"),
+                    readTables(root)
             );
         } catch (ObjectNotFoundException e) {
             throw new ResultFileNotFoundException(taskId, e);
@@ -339,13 +341,50 @@ public class TaskServiceImpl implements TaskService {
                     content,
                     textOrEmpty(root, "station_name"),
                     textOrEmpty(root, "organization"),
-                    textOrEmpty(root, "region")
+                    textOrEmpty(root, "region"),
+                    readTables(root)
             );
         } catch (ObjectNotFoundException e) {
             throw new ResultFileNotFoundException(task.getId(), e);
         } catch (IOException e) {
             throw new FileDownloadException(BucketType.GENERATED_JSON, key, e);
         }
+    }
+
+    /** sections[].tables + table-приложения; номер приложения считаем среди всех appendices, как assembler. */
+    private static List<TaskContentTable> readTables(JsonNode root) {
+        List<TaskContentTable> tables = new ArrayList<>();
+        for (JsonNode section : root.path("sections")) {
+            for (JsonNode table : section.path("tables")) {
+                addTable(tables, table.path("title").asText(""), table);
+            }
+        }
+        int number = 0;
+        for (JsonNode appendix : root.path("appendices")) {
+            number++;
+            if ("table".equals(appendix.path("type").asText())) {
+                addTable(tables, "Приложение " + number + ". " + appendix.path("title").asText(""), appendix.path("table"));
+            }
+        }
+        return tables;
+    }
+
+    private static void addTable(List<TaskContentTable> tables, String title, JsonNode table) {
+        List<List<String>> rows = new ArrayList<>();
+        for (JsonNode row : table.path("rows")) {
+            rows.add(cells(row));
+        }
+        if (!rows.isEmpty()) {
+            tables.add(new TaskContentTable(title.trim(), cells(table.path("headers")), rows));
+        }
+    }
+
+    private static List<String> cells(JsonNode array) {
+        List<String> cells = new ArrayList<>();
+        for (JsonNode cell : array) {
+            cells.add(cell.isNull() ? "" : cell.asText(""));
+        }
+        return cells;
     }
 
     private static String textOrEmpty(JsonNode root, String field) {
